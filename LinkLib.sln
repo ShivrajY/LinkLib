@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 16
+VisualStudioVersion = 25.0.1700.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "LinkLib", "LinkLib\LinkLib.fsproj", "{104F8919-073C-471C-8DEE-F7131941C819}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{104F8919-073C-471C-8DEE-F7131941C819}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{104F8919-073C-471C-8DEE-F7131941C819}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{104F8919-073C-471C-8DEE-F7131941C819}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{104F8919-073C-471C-8DEE-F7131941C819}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {382DC7B8-278D-49F1-9F1F-0FCEBFB9B3F1}
+	EndGlobalSection
+EndGlobal
