@@ -3,25 +3,17 @@ module LinkLib.Helper
 
 open System
 open System.Net
-open System.IO
 open System.Threading
-open System.Threading.Tasks
-open System.Collections.Generic
 open System.Net.Http
 open AngleSharp
 open AngleSharp.Css
 open AngleSharp.Js
-open AngleSharp.Io.Network
+open AngleSharp.Io
 open AngleSharp.Html.Parser
 open Microsoft.Isam.Esent.Collections.Generic
+open System.Collections.Generic
 
 module internal CrawlerHelper =
-    type AgentMessage =
-        | Url of parentUrl: string * url: string
-        | Pause
-        | Unpause
-        | MessageWithResponse of inputData: string * channel: AsyncReplyChannel<string>
-
     type RequestGate(n: int) =
         let semaphore = new Semaphore(initialCount = n, maximumCount = n)
 
@@ -35,18 +27,16 @@ module internal CrawlerHelper =
                             member x.Dispose() = semaphore.Release() |> ignore }
                 else
                     return! failwith "Semaphore couldn't be aquired..."
-
             }
+
 
     let webRequestGate = RequestGate(20)
     let handler = new HttpClientHandler()
     let httpClient = new HttpClient(handler)
 
-
     let config =
         Configuration
             .Default
-            .WithDefaultLoader()
             .WithCss()
             .WithJs()
 
@@ -108,7 +98,10 @@ module internal CrawlerHelper =
                 return None //failed
         }
 
-    let crawlingAgent (baseUrl: string, ct: CancellationToken) =
+    let crawlingAgent (baseUrl: string) (linkSet:Set<string>) (visistedDictionary: PersistentDictionary<_,_>) (queueDictionary: PersistentDictionary<_,_>) (ct: CancellationToken) =
+        let AddToVisitedAndRemoveFromQueue(url:string, t: bool) =
+           visistedDictionary.[url] <- t
+           queueDictionary.Remove(url)
         MailboxProcessor.Start(
             (fun (inbox: MailboxProcessor<string * string>) ->
                 let rec waitforUrl (visited: Set<string>) =
@@ -117,23 +110,27 @@ module internal CrawlerHelper =
                         //
                         printfn "%A" (parent, url)
 
-
                         if not (visited.Contains url) then
+                            //Added to visited dictionary
                             do!
                                 Async.StartChild(
                                     async {
                                         try
                                             let! result = collectLinks baseUrl url ct
-
                                             match result with
-                                            | Some (url, []) -> printfn "%s" url
                                             | Some (url, links) ->
                                                 printfn "%A" links
-
+                                                if not (AddToVisitedAndRemoveFromQueue(url, true)) then
+                                                    queueDictionary.[url] <- parent
                                                 for link in links do
-                                                    inbox.Post(url, link)
-
+                                                    //added to the queue
+                                                    if not (queueDictionary.ContainsKey(link)) then
+                                                        queueDictionary.[link] <- url 
+                                                        inbox.Post(url, link)
                                             | None -> printfn "FAILED:  %s" url
+                                                      AddToVisitedAndRemoveFromQueue(url, false) |> ignore
+                                            visistedDictionary.Flush()
+                                            queueDictionary.Flush()
                                         with
                                         | ex -> printfn "%A" ex
                                     }
@@ -141,17 +138,17 @@ module internal CrawlerHelper =
                                 |> Async.Ignore
                         else
                             printfn "Already visited: %s" url
-
-
                         return! waitforUrl (visited.Add url)
                     }
-
-                waitforUrl Set.empty),
+                waitforUrl linkSet),
             ct
         )
-
 
 open CrawlerHelper
 
 type WebCrawler(startUrl: Uri, ?cancellationToken: CancellationToken, ?logger: Action<string>) =
     let baseUrl = $"{startUrl.Scheme}://{startUrl.Host}"
+    let visistedDictionary = new PersistentDictionary<string,bool>("Visisted")
+    let queueDictionary = new PersistentDictionary<string,string>("LinkQueue")
+
+            

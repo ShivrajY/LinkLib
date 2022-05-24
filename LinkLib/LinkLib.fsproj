@@ -10,9 +10,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Database.Collections.Generic" Version="2.0.3">
-      <GeneratePathProperty></GeneratePathProperty>
-    </PackageReference>
     <PackageReference Include="AngleSharp" Version="0.16.1">
       <GeneratePathProperty></GeneratePathProperty>
     </PackageReference>
@@ -23,6 +20,9 @@
       <GeneratePathProperty></GeneratePathProperty>
     </PackageReference>
     <PackageReference Include="AngleSharp.Js" Version="0.15.0">
+      <GeneratePathProperty></GeneratePathProperty>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Database.Collections.Generic" Version="2.0.3">
       <GeneratePathProperty></GeneratePathProperty>
     </PackageReference>
   </ItemGroup>
