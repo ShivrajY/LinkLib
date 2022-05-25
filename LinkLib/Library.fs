@@ -29,7 +29,7 @@ let webRequestGate = RequestGate(20)
 [<RequireQualifiedAccess>]
 type Link =
     | InternalLink of parent: string * url: string * links: string list
-    | ExternalLink of parent: string * url: string
+    | ExternalLink of parent: string * url: string * links: string list
     | Failure of parent: string * url: string
     | Error of exn
 
@@ -82,7 +82,7 @@ let fetch (baseUrl: string) parentUrl (url: string) (ct: CancellationToken) =
                 let! links = getLinks parentUrl url content
                 return Link.InternalLink(parentUrl, url, links)
             else
-                return Link.ExternalLink(parentUrl, url)
+                return Link.ExternalLink(parentUrl, url, [])
         with
         | ex -> return Link.Error(ex)
     }
@@ -92,41 +92,65 @@ let fileLocker = obj ()
 let saveLink (path: string) parent link =
     lock fileLocker (fun _ -> File.AppendAllLines(path, [| $"{parent},{link}" |]))
 
+
+
 let crawlAgent
     goodFile
     badFile
     (baseUrl: string)
-    (visistedDictionary: PersistentDictionary<_, _>)
-    (queueDictionary: PersistentDictionary<_, _>)
+    (visistedDictionary: PersistentDictionary<string, bool>)
+    (queueDictionary: PersistentDictionary<string, string>)
     (ct: CancellationToken)
     =
     let visitedSet = Set.empty
 
+    let addVisitedRemoveQueue p u t =
+        if not (visistedDictionary.ContainsKey u) then
+            visistedDictionary.[u] <- t
+
+        if (queueDictionary.ContainsKey u) then
+            queueDictionary.Remove(u) |> ignore
+
     MailboxProcessor.Start (fun inbox ->
         let rec loop (visited: string Set) =
             async {
-                let! (parent, link) = inbox.Receive()
+                let! (parent, url) = inbox.Receive()
 
-                if not (visited.Contains(link)) then
+                if not (visited.Contains(url)) then
                     // Add to the visited queueDictionary
+                    //Added to the queue
+                    queueDictionary.[url] <- parent
+
                     do!
                         async {
                             try
-                                let! result = fetch baseUrl parent link ct
+
+                                let! result = fetch baseUrl parent url ct
 
                                 match result with
+
+                                | Link.ExternalLink (parent, link, links)
                                 | Link.InternalLink (parent, link, links) ->
                                     do!
-                                        async {
-                                            try
+                                        Async.StartChild(
+                                            async {
+                                                addVisitedRemoveQueue parent link true
+                                                saveLink goodFile parent link
+
                                                 links
-                                                |> List.iter (fun child -> inbox.Post(link, child))
-                                            with
-                                            | ex -> saveLink badFile parent link
-                                        }
-                                | Link.ExternalLink (parent, link) -> saveLink goodFile parent link
-                                | Link.Failure (parent, link) -> saveLink badFile parent link
-                                | Link.Error (ex) -> ()
+                                                |> List.iter (fun child ->
+                                                    queueDictionary.[link] <- child
+                                                    inbox.Post(link, child))
+                                            }
+                                        )
+                                        |> Async.Ignore
+
+                                | Link.Failure (parent, link) ->
+
+                                    addVisitedRemoveQueue parent link false
+                                    saveLink badFile parent link
+
+                                | Link.Error _ -> ()
 
                                 visistedDictionary.Flush()
                                 queueDictionary.Flush()
@@ -135,7 +159,9 @@ let crawlAgent
                             | ex -> ()
                         }
 
-                    return! loop (visited.Add(link))
+                    return! loop (visited.Add(url))
+                else if not (queueDictionary.Count = 0) then
+                    return ()
             }
 
         loop visitedSet)
