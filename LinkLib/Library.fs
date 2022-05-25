@@ -4,8 +4,10 @@ open System
 open System.Net
 open System.Net.Http
 open System.Threading
-open FSharp.Data
 open System.IO
+open Microsoft.Isam.Esent.Collections.Generic
+open AngleSharp
+open AngleSharp.Html.Parser
 
 type RequestGate(n: int) =
     let semaphore = new Semaphore(initialCount = n, maximumCount = n)
@@ -40,26 +42,33 @@ handler.UseCookies <- true
 handler.CookieContainer <- new CookieContainer()
 let httpClient = new HttpClient(handler)
 
-let getLinks parent html =
-    HtmlDocument.Parse(html).CssSelect("a")
-    |> List.choose (fun x ->
-        x.TryGetAttribute("href")
-        |> Option.map (fun a -> a.Value()))
-    |> List.filter(fun x -> x.Length > 0 && not (x.ToLowerInvariant().Contains("javascript")))
-    |> List.map(fun x -> 
-                        let uri = Uri(parent)
-                        let u = uri.ToString()
-                        let path = u.Substring(0, u.LastIndexOf('/'))
-                        if(x.StartsWith('/')) then
-                           $"{path}{x}"
-                        elif (x.StartsWith("http")) then
-                           x
-                        else
-                            $"{u}{x}"
-                  )
+let config = Configuration.Default.WithDefaultLoader()
 
+let getLinks parent url (html: string) =
+    async {
+        use context = new BrowsingContext(config)
+        let parser = context.GetService<IHtmlParser>()
+        use! doc = parser.ParseDocumentAsync(html) |> Async.AwaitTask
 
-let fetch (baseUrl: string, parentUrl: string, url: string) =
+        let links =
+            doc.QuerySelectorAll("a")
+            |> Seq.filter (fun x -> x.HasAttribute("href"))
+            |> Seq.map (fun x -> x.GetAttribute("href"))
+            |> Seq.filter (fun x -> (x.Length > 1) && not (x.StartsWith("javascript")))
+            |> Seq.map (fun x ->
+                let uri = (new Uri(url)).ToString()
+                let index = uri.LastIndexOf('/')
+                let path = uri.Substring(0, index)
+
+                if (x.StartsWith('/')) then $"{path}{x}"
+                elif (x.StartsWith "http") then x
+                else $"{path}/{x}")
+            |> Seq.toList
+
+        return links
+    }
+
+let fetch (baseUrl: string) parentUrl (url: string) (ct: CancellationToken) =
     async {
         try
             use! r =
@@ -70,7 +79,7 @@ let fetch (baseUrl: string, parentUrl: string, url: string) =
                 return Link.Failure(parentUrl, url)
             else if (url.Contains baseUrl) then
                 let! content = r.Content.ReadAsStringAsync() |> Async.AwaitTask
-                let links = getLinks parentUrl content
+                let! links = getLinks parentUrl url content
                 return Link.InternalLink(parentUrl, url, links)
             else
                 return Link.ExternalLink(parentUrl, url)
@@ -78,30 +87,55 @@ let fetch (baseUrl: string, parentUrl: string, url: string) =
         | ex -> return Link.Error(ex)
     }
 
-let fileLocker = obj()
+let fileLocker = obj ()
 
-let saveLink (path:string) (parent, link) = 
-            lock fileLocker (fun _ -> 
-                             File.AppendAllLines(path, [|$"{parent},{link}"|])
-                    )
-        
+let saveLink (path: string) parent link =
+    lock fileLocker (fun _ -> File.AppendAllLines(path, [| $"{parent},{link}" |]))
 
-let crawlAgent goodFile badFile (baseUrl: string) (url: string) =
+let crawlAgent
+    goodFile
+    badFile
+    (baseUrl: string)
+    (visistedDictionary: PersistentDictionary<_, _>)
+    (queueDictionary: PersistentDictionary<_, _>)
+    (ct: CancellationToken)
+    =
+    let visitedSet = Set.empty
+
     MailboxProcessor.Start (fun inbox ->
-        let rec loop () =
+        let rec loop (visited: string Set) =
             async {
                 let! (parent, link) = inbox.Receive()
 
-                let! result = fetch (baseUrl, parent, link)
+                if not (visited.Contains(link)) then
+                    // Add to the visited queueDictionary
+                    do!
+                        async {
+                            try
+                                let! result = fetch baseUrl parent link ct
 
-                match result with
-                | Link.InternalLink (parent, url, links) ->
-                    saveLink goodFile (parent, url)
-                    links |> List.iter (fun l -> inbox.Post(url, l))
-                | Link.ExternalLink (parent, url) -> saveLink goodFile (parent, url)
-                | Link.Failure (parent, url) -> saveLink badFile (parent, url)
-                | Link.Error (exn) -> ()
-                |> ignore
+                                match result with
+                                | Link.InternalLink (parent, link, links) ->
+                                    do!
+                                        async {
+                                            try
+                                                links
+                                                |> List.iter (fun child -> inbox.Post(link, child))
+                                            with
+                                            | ex -> saveLink badFile parent link
+                                        }
+                                | Link.ExternalLink (parent, link) -> saveLink goodFile parent link
+                                | Link.Failure (parent, link) -> saveLink badFile parent link
+                                | Link.Error (ex) -> ()
+
+                                visistedDictionary.Flush()
+                                queueDictionary.Flush()
+
+                            with
+                            | ex -> ()
+                        }
+
+                    return! loop (visited.Add(link))
             }
 
-        loop ())
+        loop visitedSet)
