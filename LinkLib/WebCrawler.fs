@@ -254,16 +254,15 @@ module internal WebCrawlerOps =
                                 Async.StartChild(
                                     async {
                                         try
-
                                             let! result = fetch baseUrl parent url ct
 
                                             match result with
                                             | Link.BadLink _ ->
                                                 dbAgent.Post(DbMessage.SaveVisited(visistedTableName, [ key, false ]))
-                                                log ($"{url} is BAD")
+                                                log ($"BAD: {url}")
                                             | Link.GoodLink (_, url, links) ->
                                                 dbAgent.Post(DbMessage.SaveVisited(visistedTableName, [ key, true ]))
-                                                log ($"{url} is GOOD")
+                                                log ($"GOOD: {url}")
 
                                                 let tuples =
                                                     links
