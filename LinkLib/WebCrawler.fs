@@ -136,13 +136,10 @@ module internal Database =
                         engine.Dispose()
                         return ()
 
-
                     return! loop ()
                 }
 
             loop ())
-
-
 
 module internal WebCrawlerOps =
 
@@ -161,6 +158,7 @@ module internal WebCrawlerOps =
 
     let mutable linkSet = Set.empty
 
+    //get links
     let getLinks url html =
         async {
             use! doc =
@@ -186,14 +184,16 @@ module internal WebCrawlerOps =
                         .Replace(@"\n", String.Empty)
                         .Replace(@"\t", String.Empty)
                         .Replace(Environment.NewLine, String.Empty))
-                |> Set.map (fun x ->
+                |> Set.map (fun l ->
+                    let x = l.TrimEnd(' ', '/')
+
                     let lnk =
                         if (x.StartsWith("http")) then
                             x
                         else if (x.StartsWith('/')) then
-                            $"{sub}{x}"
+                            $"{sub}{x}/"
                         else
-                            sprintf @"%s/%s" u x
+                            sprintf @"%s/%s/" sub x
 
                     lnk)
 
@@ -202,6 +202,7 @@ module internal WebCrawlerOps =
             return links
         }
 
+    // download html
     let fetch (baseUrl: string) parentUrl (url: string) (ct: CancellationToken) =
         async {
             try
@@ -328,3 +329,14 @@ type WebCrawler(baseUrl: string, outputDir: string, logMethod: string -> unit) =
         agent.Post("", "")
         dbAgent.Post(DbMessage.Quit)
         cts.Cancel()
+
+    member _.Export() =
+        task {
+            let! db = dbAgent.PostAndAsyncReply(fun r -> DbMessage.GetAllVistedData(r))
+            use fileWriter = File.CreateText(outputDir + "\\links_db.csv")
+
+            for (k, v) in db do
+                do! fileWriter.WriteLineAsync($"{k},{v}")
+
+            logMethod ("Export done.")
+        }
