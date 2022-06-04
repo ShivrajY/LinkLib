@@ -11,8 +11,6 @@ open System.Net
 open AngleSharp
 open DBreeze
 
-
-
 type RequestGate(n: int) =
     let semaphore = new Semaphore(initialCount = n, maximumCount = n)
 
