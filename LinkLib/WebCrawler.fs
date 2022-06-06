@@ -44,6 +44,32 @@ type DbMessage =
     | GetQueueLength of reply: AsyncReplyChannel<uint64>
     | Quit
 
+type LinkFile =
+    | GoodLinksFile
+    | BadLinksFile
+
+module internal FileOps =
+    let fileAgent goodFile badFile =
+        let gfsw = File.AppendText(goodFile)
+        gfsw.AutoFlush <- true
+        let bfsw = File.AppendText(badFile)
+        bfsw.AutoFlush <- true
+
+        Agent<LinkFile * string>.Start
+            (fun inbox ->
+                let rec loop () =
+                    async {
+                        let! (fileType, line) = inbox.Receive()
+
+                        match fileType with
+                        | GoodLinksFile -> do! gfsw.WriteLineAsync(line) |> Async.AwaitTask
+                        | BadLinksFile -> do! bfsw.WriteLineAsync(line) |> Async.AwaitTask
+
+                        return! loop ()
+                    }
+
+                loop ())
+
 module internal Database =
     [<Literal>]
     let Visited = "Visited"
@@ -55,10 +81,8 @@ module internal Database =
         async {
             if not (keyValueList.IsEmpty) then
                 use tran = engine.GetTransaction()
-
                 keyValueList
                 |> List.iter (fun (k, v) -> tran.Insert(table, k, v))
-
                 tran.Commit()
         }
 
@@ -90,14 +114,12 @@ module internal Database =
     let getAllData (engine: DBreezeEngine) (table: string) =
         async {
             use tran = engine.GetTransaction()
-
             let data =
                 seq {
                     for row in tran.SelectForward(table) do
                         yield (row.Key, row.Value)
                 }
                 |> List.ofSeq
-
             return data
         }
 
@@ -108,14 +130,13 @@ module internal Database =
             return cnt
         }
 
-    let dbAgent (folder: string) (ct: CancellationToken) =
+    let dbAgent (parentFolder: string) (ct: CancellationToken) =
+        let folder = Path.Combine(parentFolder, "data")
         let engine = new DBreezeEngine(folder)
-
         Agent.Start (fun (inbox: Agent<DbMessage>) ->
             let rec loop () =
                 async {
                     let! msg = inbox.Receive()
-
                     match msg with
                     | SaveQueue (table, dataList) -> do! saveQueue engine table dataList
                     | SaveVisited (table, dataList) -> do! saveVisited engine table dataList
@@ -229,6 +250,7 @@ module internal WebCrawlerOps =
         (visistedTableName: string)
         (linksQueueTableName: string)
         (dbAgent: Agent<DbMessage>)
+        (fileAgent: Agent<LinkFile * string>)
         (ct: CancellationToken)
         (log: string -> unit)
         =
@@ -260,9 +282,11 @@ module internal WebCrawlerOps =
                                             | Link.BadLink _ ->
                                                 dbAgent.Post(DbMessage.SaveVisited(visistedTableName, [ key, false ]))
                                                 log ($"BAD: {url}")
+                                                fileAgent.Post(LinkFile.BadLinksFile, key)
                                             | Link.GoodLink (_, url, links) ->
                                                 dbAgent.Post(DbMessage.SaveVisited(visistedTableName, [ key, true ]))
                                                 log ($"GOOD: {url}")
+                                                fileAgent.Post(LinkFile.GoodLinksFile, key)
 
                                                 let tuples =
                                                     links
@@ -300,12 +324,13 @@ module internal WebCrawlerOps =
             ct
         )
 
-type WebCrawler(baseUrl: string, outputDir: string, logMethod: string -> unit) =
+type WebCrawler(baseUrl: string, goodFile: string, badFile: string, outputDir: string, logMethod: string -> unit) =
     let cts = new CancellationTokenSource()
     let dbAgent = Database.dbAgent (outputDir) cts.Token
+    let fileAgent = FileOps.fileAgent goodFile badFile
 
     let agent =
-        WebCrawlerOps.crawlerAgent baseUrl Database.Visited Database.Queue dbAgent cts.Token logMethod
+        WebCrawlerOps.crawlerAgent baseUrl Database.Visited Database.Queue dbAgent fileAgent cts.Token logMethod
 
     interface IDisposable with
         member _.Dispose() =
@@ -329,13 +354,11 @@ type WebCrawler(baseUrl: string, outputDir: string, logMethod: string -> unit) =
         dbAgent.Post(DbMessage.Quit)
         cts.Cancel()
 
-    member _.Export() =
+    member _.Export (filePath:string) =
         task {
             let! db = dbAgent.PostAndAsyncReply(fun r -> DbMessage.GetAllVistedData(r))
-            use fileWriter = File.CreateText(outputDir + "\\links_db.csv")
-
+            use fileWriter = File.CreateText(Path.Combine(outputDir, filePath))
             for (k, v) in db do
                 do! fileWriter.WriteLineAsync($"{k},{v}")
-
             logMethod ("Export done.")
         }
