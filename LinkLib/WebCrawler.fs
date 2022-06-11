@@ -1,171 +1,48 @@
-﻿(* The mind is it's own place and in itself can make a heaven of hell, a hell of heaven.*)
+﻿//_^_ OGGN _^_
+namespace WebCrawler
 
-namespace LinkLib
-
-open System
-open System.Linq
-open System.IO
-open System.Threading
-open System.Net.Http
 open System.Net
+open System.Net.Http
+open System.IO
+open System.Text
 open AngleSharp
-open DBreeze
+open System.Threading
+open System
 
-type RequestGate(n: int) =
-    let semaphore = new Semaphore(initialCount = n, maximumCount = n)
+module DomainTypes =
+    [<RequireQualifiedAccess>]
+    type Link =
+        | Good of parent: string * url: string * pageLinks: string Set
+        | Bad of parent: string * child: string
+        | Error of string
 
-    member _.AcquireAsync(?timeout) =
-        async {
-            let! ok = Async.AwaitWaitHandle(semaphore, ?millisecondsTimeout = timeout)
+    [<RequireQualifiedAccess>]
+    type FileMessage =
+        | Good of string
+        | Bad of string
+        | Queue of string Set
+        | Quit
 
-            if ok then
-                return
-                    { new IDisposable with
-                        member x.Dispose() = semaphore.Release() |> ignore }
-            else
-                return! failwith "Semaphore couldn't be aquired..."
-        }
+module MultiThreading =
+    type RequestGate(n: int) =
+        let semaphore = new Semaphore(initialCount = n, maximumCount = n)
 
+        member _.AcquireAsync(?timeout) =
+            async {
+                let! ok = Async.AwaitWaitHandle(semaphore, ?millisecondsTimeout = timeout)
 
-type Link =
-    | GoodLink of parent: string * url: string * links: string seq
-    | BadLink of parent: string * url: string
-    | Error of msg: string
-
-type Agent<'a> = MailboxProcessor<'a>
-
-type DbMessage =
-    | SaveVisited of table: string * data: list<string * bool>
-    | SaveQueue of table: string * data: list<string * string>
-    | Remove of table: string * key: string
-    | ContainsKey of table: string * key: string * reply: AsyncReplyChannel<bool>
-    | GetAllVistedData of reply: AsyncReplyChannel<seq<string * bool>>
-    | GetAllQueueData of reply: AsyncReplyChannel<List<string * string>>
-    | GetQueueLength of reply: AsyncReplyChannel<uint64>
-    | Quit
-
-type LinkFile =
-    | GoodLinksFile
-    | BadLinksFile
-
-module internal FileOps =
-    let fileAgent goodFile badFile =
-        let gfsw = File.AppendText(goodFile)
-        gfsw.AutoFlush <- true
-        let bfsw = File.AppendText(badFile)
-        bfsw.AutoFlush <- true
-
-        Agent<LinkFile * string>.Start
-            (fun inbox ->
-                let rec loop () =
-                    async {
-                        let! (fileType, line) = inbox.Receive()
-
-                        match fileType with
-                        | GoodLinksFile -> do! gfsw.WriteLineAsync(line) |> Async.AwaitTask
-                        | BadLinksFile -> do! bfsw.WriteLineAsync(line) |> Async.AwaitTask
-
-                        return! loop ()
-                    }
-
-                loop ())
-
-module internal Database =
-    [<Literal>]
-    let Visited = "Visited"
-
-    [<Literal>]
-    let Queue = "Queue"
-
-    let saveQueue (engine: DBreezeEngine) (table: string) (keyValueList: List<'a * 'b>) =
-        async {
-            if not (keyValueList.IsEmpty) then
-                use tran = engine.GetTransaction()
-                keyValueList
-                |> List.iter (fun (k, v) -> tran.Insert(table, k, v))
-                tran.Commit()
-        }
-
-    let saveVisited (engine: DBreezeEngine) (table: string) (keyValueList: List<string * bool>) =
-        async {
-            if not (keyValueList.IsEmpty) then
-                use tran = engine.GetTransaction()
-
-                keyValueList
-                |> List.iter (fun (k, v) -> tran.Insert(table, k, v))
-
-                tran.Commit()
-        }
-
-    let removeKey (engine: DBreezeEngine) (table: string) (key: 'a) =
-        async {
-            use tran = engine.GetTransaction()
-            tran.RemoveKey(table, key)
-            tran.Commit()
-        }
-
-    let containsKey (engine: DBreezeEngine) (table: string) (key: 'a) =
-        async {
-            use tran = engine.GetTransaction()
-            let row = tran.Select(table, key)
-            return row.Exists
-        }
-
-    let getAllData (engine: DBreezeEngine) (table: string) =
-        async {
-            use tran = engine.GetTransaction()
-            let data =
-                seq {
-                    for row in tran.SelectForward(table) do
-                        yield (row.Key, row.Value)
-                }
-                |> List.ofSeq
-            return data
-        }
-
-    let getQueueLength (engine: DBreezeEngine) (table: string) =
-        async {
-            use tran = engine.GetTransaction()
-            let cnt = tran.Count(table)
-            return cnt
-        }
-
-    let dbAgent (parentFolder: string) (ct: CancellationToken) =
-        let folder = Path.Combine(parentFolder, "data")
-        let engine = new DBreezeEngine(folder)
-        Agent.Start (fun (inbox: Agent<DbMessage>) ->
-            let rec loop () =
-                async {
-                    let! msg = inbox.Receive()
-                    match msg with
-                    | SaveQueue (table, dataList) -> do! saveQueue engine table dataList
-                    | SaveVisited (table, dataList) -> do! saveVisited engine table dataList
-                    | Remove (table, key) -> do! removeKey engine table key
-                    | ContainsKey (table, key, replyChannel) ->
-                        let! ok = containsKey engine table key
-                        replyChannel.Reply(ok)
-                    | GetAllVistedData (replyChannel) ->
-                        let! data = getAllData engine Visited
-                        replyChannel.Reply(data)
-                    | GetAllQueueData (replyChannel) ->
-                        let! data = getAllData engine Queue
-                        replyChannel.Reply(data)
-                    | GetQueueLength (replyChannel) ->
-                        let! data = getQueueLength engine Queue
-                        replyChannel.Reply(data)
-                    | Quit ->
-                        engine.Dispose()
-                        return ()
-
-                    return! loop ()
-                }
-
-            loop ())
-
-module internal WebCrawlerOps =
+                if (ok) then
+                    return
+                        { new IDisposable with
+                            member x.Dispose() = semaphore.Release() |> ignore }
+                else
+                    return! failwith "Semaphore timeout"
+            }
 
     let webRequestGate = RequestGate(20)
 
+module Networking =
+    open DomainTypes
     let handler = new HttpClientHandler()
     handler.AllowAutoRedirect <- true
     handler.AutomaticDecompression <- DecompressionMethods.All
@@ -174,12 +51,8 @@ module internal WebCrawlerOps =
     handler.UseCookies <- true
     handler.CookieContainer <- new CookieContainer()
     let httpClient = new HttpClient(handler)
-
     let config = Configuration.Default.WithDefaultLoader()
 
-    let mutable linkSet = Set.empty
-
-    //get links
     let getLinks url html =
         async {
             use! doc =
@@ -191,15 +64,14 @@ module internal WebCrawlerOps =
             let u = Uri(url).ToString()
             let sub = u.Substring(0, u.LastIndexOf('/'))
 
-            let links =
+            return
                 doc.QuerySelectorAll("a[href]")
                 |> Seq.map (fun x -> x.GetAttribute("href"))
                 |> Set.ofSeq
                 |> Set.filter (fun x ->
                     x.Length > 1
                     && not (x.Contains("javascript"))
-                    && not (x.StartsWith('#'))
-                    && not (linkSet.Contains(x)))
+                    && not (x.StartsWith('#')))
                 |> Set.map (fun x ->
                     x
                         .Replace(@"\n", String.Empty)
@@ -218,101 +90,173 @@ module internal WebCrawlerOps =
 
                     lnk)
 
-            linkSet <- linkSet + links
-
-            return links
         }
-
     // download html
-    let fetch (baseUrl: string) parentUrl (url: string) (ct: CancellationToken) =
+    let fetch (baseUrl: string) (parentUrl: string) (url: string) (ct: CancellationToken) =
         async {
             try
-                use! holder = webRequestGate.AcquireAsync()
+                use! holder = MultiThreading.webRequestGate.AcquireAsync()
 
                 use! r =
                     httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct)
                     |> Async.AwaitTask
 
                 if not (r.IsSuccessStatusCode) then
-                    return Link.BadLink(parentUrl, url)
+                    return Link.Bad(parentUrl, url)
                 elif not (url.Contains baseUrl) then
-                    return Link.GoodLink(parentUrl, url, [])
+                    return Link.Good(parentUrl, url, Set.empty)
                 else
                     let! content = r.Content.ReadAsStringAsync() |> Async.AwaitTask
                     let! links = getLinks url content
-                    return Link.GoodLink(parentUrl, url, links)
+                    return Link.Good(parentUrl, url, links)
             with
             | ex -> return Link.Error(ex.Message)
         }
 
+module FileOps =
+    open DomainTypes
+    open System.Collections.Concurrent
+    open System.Collections.Generic
+
+    let addLinks file (dictionary: ConcurrentDictionary<string, string>) =
+        for line in File.ReadAllLines(file) do
+            let pair = line.Split(",", StringSplitOptions.RemoveEmptyEntries)
+            let parent = pair.[0].Trim('"')
+            let child = pair.[1].Trim('"')
+            dictionary.[child] <- parent
+
+    let getQueueLinks file = File.ReadAllLines file
+
+    let saveQueueLinks file (data: (KeyValuePair<string, string>) seq) =
+        let x =
+            data
+            |> Seq.map (fun kvp -> String.Format("\"{0}\",\"{1}\"", kvp.Key, kvp.Value))
+
+        File.WriteAllLines(file, x)
+
+    let getVisitedAndQueue goodFile badFile queueFile =
+        let visited = new ConcurrentDictionary<string, string>()
+        addLinks goodFile visited
+        addLinks badFile visited
+
+        let links =
+            getQueueLinks queueFile
+            |> Array.map (fun x ->
+                let arr = x.Split(",", StringSplitOptions.RemoveEmptyEntries)
+
+                if (arr.Length > 1) then
+                    let parent = arr.[0].Trim('"')
+                    let child = arr.[1].Trim('"')
+                    KeyValuePair.Create(child, parent)
+                else
+                    KeyValuePair.Create("", ""))
+            |> Array.filter (fun kvp -> kvp.Key <> "" && kvp.Value <> "")
+
+        let x =
+            links
+            |> Array.filter (fun (kvp) -> not (visited.ContainsKey(kvp.Key)))
+
+        let queue = new ConcurrentDictionary<string, string>(x)
+        saveQueueLinks queueFile queue
+        visited, queue
+
+    let flushAllFiles (goodFileSW: StreamWriter) (badFileSW: StreamWriter) (queueFile: StreamWriter) =
+        async {
+            do! goodFileSW.FlushAsync() |> Async.AwaitTask
+            do! badFileSW.FlushAsync() |> Async.AwaitTask
+            do! queueFile.FlushAsync() |> Async.AwaitTask
+        }
+
+    let fileAgent goodFile badFile queueFile (ct: CancellationToken) =
+        let mutable count = 0
+        let gfsw = File.AppendText(goodFile)
+        let bfsw = File.AppendText(badFile)
+        let queuefsw = File.AppendText(queueFile)
+
+        let EnQueueAsync (urls: string Set) =
+            async {
+                for url in urls do
+                    do! queuefsw.WriteLineAsync(url) |> Async.AwaitTask
+            }
+
+        MailboxProcessor.Start(
+            (fun (inbox: MailboxProcessor<FileMessage>) ->
+                let rec loop () =
+                    async {
+                        let! link = inbox.Receive()
+
+                        match link with
+                        | FileMessage.Good str -> do! gfsw.WriteLineAsync(str) |> Async.AwaitTask
+                        | FileMessage.Bad (str) -> do! bfsw.WriteLineAsync(str) |> Async.AwaitTask
+                        | FileMessage.Queue s ->
+                            do! EnQueueAsync(s)
+                            do! flushAllFiles gfsw bfsw queuefsw
+                        | FileMessage.Quit ->
+                            do! flushAllFiles gfsw bfsw queuefsw
+                            do! gfsw.DisposeAsync().AsTask() |> Async.AwaitTask
+                            do! bfsw.DisposeAsync().AsTask() |> Async.AwaitTask
+
+                            do!
+                                queuefsw.DisposeAsync().AsTask()
+                                |> Async.AwaitTask
+
+                        return! loop ()
+                    }
+
+                loop ()),
+            ct
+        )
+
+module Crawler =
+    open DomainTypes
+    open Networking
+    open System.Linq
+    open FileOps
+    open System.Collections.Concurrent
+
     let crawlerAgent
         (baseUrl: string)
-        (visistedTableName: string)
-        (linksQueueTableName: string)
-        (dbAgent: Agent<DbMessage>)
-        (fileAgent: Agent<LinkFile * string>)
+        (fileAgent: MailboxProcessor<FileMessage>)
+        (visited: ConcurrentDictionary<string, string>)
+        (queue: ConcurrentDictionary<string, string>)
         (ct: CancellationToken)
         (log: string -> unit)
         =
-        Agent.Start(
+        MailboxProcessor.Start(
             (fun inbox ->
                 let rec loop () =
                     async {
                         let! (parent, url) = inbox.Receive()
-                        log ($"{parent} -> {url}")
+                        let! result = fetch baseUrl parent url ct
 
-                        if (String.IsNullOrWhiteSpace(parent)
-                            && String.IsNullOrWhiteSpace(url)) then
-                            log ("Crawler is stopped.")
-                            return ()
-
-                        let key = $"\"{parent}\",\"{url}\""
-
-                        let! keyPresent =
-                            dbAgent.PostAndAsyncReply(fun r -> DbMessage.ContainsKey(visistedTableName, key, r))
-
-                        if not (keyPresent) then
+                        if not (visited.ContainsKey(url)) then
                             do!
                                 Async.StartChild(
                                     async {
-                                        try
-                                            let! result = fetch baseUrl parent url ct
+                                        match result with
+                                        | Link.Good (_, url, links) ->
+                                            visited.[url] <- parent
+                                            queue.TryRemove(url) |> ignore
+                                            let str = String.Format("\"{0}\",\"{1}\"", parent, url)
+                                            fileAgent.Post(FileMessage.Good(str))
+                                            fileAgent.Post(FileMessage.Queue(links))
 
-                                            match result with
-                                            | Link.BadLink _ ->
-                                                dbAgent.Post(DbMessage.SaveVisited(visistedTableName, [ key, false ]))
-                                                log ($"BAD: {url}")
-                                                fileAgent.Post(LinkFile.BadLinksFile, key)
-                                            | Link.GoodLink (_, url, links) ->
-                                                dbAgent.Post(DbMessage.SaveVisited(visistedTableName, [ key, true ]))
-                                                log ($"GOOD: {url}")
-                                                fileAgent.Post(LinkFile.GoodLinksFile, key)
+                                            for link in links do
+                                                queue.[link] <- url
 
-                                                let tuples =
-                                                    links
-                                                    |> Seq.map (fun link -> (link, url))
-                                                    |> Seq.toList
+                                            for link in links do
+                                                inbox.Post(url, link)
+                                        | Link.Bad (parent, url) ->
+                                            visited.[url] <- parent
+                                            queue.TryRemove(url) |> ignore
+                                            let str = String.Format("\"{0}\",\"{1}\"", parent, url)
+                                            fileAgent.Post(FileMessage.Bad(str))
+                                        | Link.Error (msg) -> ()
 
-                                                dbAgent.Post(DbMessage.SaveQueue(linksQueueTableName, tuples))
-
-                                                let! queueLength =
-                                                    dbAgent.PostAndAsyncReply(fun r -> DbMessage.GetQueueLength(r))
-
-                                                let isLinksEmpty = links.Any() |> not
-
-                                                for link in links do
-                                                    inbox.Post(url, link)
-
-                                                if (queueLength = 0UL && isLinksEmpty) then
-                                                    //stop
-                                                    log ("Job Done!")
-                                                    return ()
-
-                                            | Link.Error _ -> ()
-
-                                            dbAgent.Post(DbMessage.Remove(linksQueueTableName, key))
-                                        with
-                                        | _ -> ()
+                                        if not (queue.Any()) then
+                                            fileAgent.Post(FileMessage.Quit)
+                                            log "Job Done!"
+                                            return ()
                                     }
                                 )
                                 |> Async.Ignore
@@ -323,42 +267,3 @@ module internal WebCrawlerOps =
                 loop ()),
             ct
         )
-
-type WebCrawler(baseUrl: string, goodFile: string, badFile: string, outputDir: string, logMethod: string -> unit) =
-    let cts = new CancellationTokenSource()
-    let dbAgent = Database.dbAgent (outputDir) cts.Token
-    let fileAgent = FileOps.fileAgent goodFile badFile
-
-    let agent =
-        WebCrawlerOps.crawlerAgent baseUrl Database.Visited Database.Queue dbAgent fileAgent cts.Token logMethod
-
-    interface IDisposable with
-        member _.Dispose() =
-            dbAgent.Post(DbMessage.Quit)
-            cts.Dispose()
-
-    member _.start(startUrl: string) =
-        let queueSet =
-            dbAgent.PostAndReply(fun r -> DbMessage.GetAllQueueData(r))
-            |> set
-
-        if (queueSet.IsEmpty) then
-            dbAgent.Post(DbMessage.SaveQueue(Database.Queue, [ (startUrl, "") ]))
-            agent.Post("", startUrl)
-        else
-            for (k, v) in queueSet do
-                agent.Post(v, k)
-
-    member _.stop() =
-        agent.Post("", "")
-        dbAgent.Post(DbMessage.Quit)
-        cts.Cancel()
-
-    member _.Export (filePath:string) =
-        task {
-            let! db = dbAgent.PostAndAsyncReply(fun r -> DbMessage.GetAllVistedData(r))
-            use fileWriter = File.CreateText(Path.Combine(outputDir, filePath))
-            for (k, v) in db do
-                do! fileWriter.WriteLineAsync($"{k},{v}")
-            logMethod ("Export done.")
-        }
