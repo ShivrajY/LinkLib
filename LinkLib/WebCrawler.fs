@@ -1,5 +1,5 @@
 ﻿//_^_ OGGN _^_
-namespace WebCrawler
+namespace LinkLib
 
 open System.Net
 open System.Net.Http
@@ -15,6 +15,7 @@ module DomainTypes =
         | Good of parent: string * url: string * pageLinks: string Set
         | Bad of parent: string * child: string
         | Error of string
+        | Quit
 
     [<RequireQualifiedAccess>]
     type FileMessage =
@@ -235,10 +236,13 @@ module Crawler =
                                     async {
                                         match result with
                                         | Link.Good (_, url, links) ->
+                                            //Add link to visited
                                             visited.[url] <- parent
-                                            queue.TryRemove(url) |> ignore
+                                            //Remove link from queue
                                             let str = String.Format("\"{0}\",\"{1}\"", parent, url)
+                                            //Add link to good file
                                             fileAgent.Post(FileMessage.Good(str))
+                                            //Queue links on the page to the queue file
                                             fileAgent.Post(FileMessage.Queue(links))
 
                                             for link in links do
@@ -246,12 +250,18 @@ module Crawler =
 
                                             for link in links do
                                                 inbox.Post(url, link)
+
+                                            log $"Queue Length = {queue.Count}"
                                         | Link.Bad (parent, url) ->
                                             visited.[url] <- parent
-                                            queue.TryRemove(url) |> ignore
                                             let str = String.Format("\"{0}\",\"{1}\"", parent, url)
                                             fileAgent.Post(FileMessage.Bad(str))
-                                        | Link.Error (msg) -> ()
+                                            log $"Bad Url = {url}"
+                                        | Link.Error (msg) -> log msg
+                                        | Link.Quit ->
+                                            fileAgent.Post(FileMessage.Quit)
+                                            log "WebCrawler Stopped..."
+                                            return ()
 
                                         if not (queue.Any()) then
                                             fileAgent.Post(FileMessage.Quit)
@@ -261,9 +271,32 @@ module Crawler =
                                 )
                                 |> Async.Ignore
 
+                        queue.TryRemove(url) |> ignore
+                        log "Url Removed from Queue"
+
                         return! loop ()
                     }
 
                 loop ()),
             ct
         )
+
+type WebCrawler(baseUrl, outputDir: string, ?logFun) =
+    let cts = new CancellationTokenSource()
+    let ct = cts.Token
+    let log = defaultArg logFun (fun (msg: string) -> Console.WriteLine(msg))
+
+    let outputDir =
+        if not (outputDir.EndsWith("\\")) then
+            outputDir
+        else
+            outputDir + "\\"
+
+    let goodFile = outputDir + "good.txt"
+    let badFile = outputDir + "bad.txt"
+    let queueFile = outputDir + "queue.txt"
+    let fileAgent = FileOps.fileAgent goodFile badFile queueFile ct
+    let visited, queue = FileOps.getVisitedAndQueue goodFile badFile queueFile
+    let crawlerAgent = Crawler.crawlerAgent baseUrl fileAgent visited queue ct log
+    member _.Start(startUrl: string) = crawlerAgent.Post("", startUrl)
+    member _.Stop() = cts.Cancel()
