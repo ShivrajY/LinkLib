@@ -132,6 +132,7 @@ module FileOps =
     open System.Collections.Generic
 
     let addLinks file (dictionary: ConcurrentDictionary<string, string>) =
+       if(File.Exists(file)) then
         for line in File.ReadAllLines(file) do
             let pair = line.Split(",", StringSplitOptions.RemoveEmptyEntries)
             if(pair.Length > 1) then
@@ -139,7 +140,10 @@ module FileOps =
                 let child = pair.[1].Trim('"')
                 dictionary.[child] <- parent
 
-    let getQueueLinks file = File.ReadAllLines file
+    let getQueueLinks file =
+         if(File.Exists (file)) then
+            File.ReadAllLines file
+          else [||]
 
     let saveQueueLinks file (data: (KeyValuePair<string, string>) seq) =
         let x =
