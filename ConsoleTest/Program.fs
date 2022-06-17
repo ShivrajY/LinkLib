@@ -2,7 +2,7 @@
 open System
 
 let url = "https://eclipse2024.org"
-let baseUrl = "eclipse2024.org"
+let baseUrl = "https://eclipse2024.org"
 let outputDir = "./data"
 let goodFile = "GoodLinks.txt"
 let badFile = "BadLinks.txt"

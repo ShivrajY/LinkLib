@@ -47,20 +47,14 @@ module Networking =
     ServicePointManager.MaxServicePoints <- 250
     let handler = new HttpClientHandler()
     handler.AllowAutoRedirect <- true
-    //handler.AutomaticDecompression <- DecompressionMethods.All
-    //handler.MaxConnectionsPerServer <- 256
     handler.ServerCertificateCustomValidationCallback <- fun _ _ _ _ -> true
-    //handler.UseCookies <- true
-    //handler.CookieContainer <- new CookieContainer()
     let httpClient = new HttpClient(handler)
 
-    httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36"
-    )
+    httpClient.DefaultRequestHeaders.UserAgent.ParseAdd( "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36" )
 
     let config = Configuration.Default.WithDefaultLoader()
 
-    let getLinks url html =
+    let getLinks baseUrl url html =
         async {
             use! doc =
                 BrowsingContext
@@ -69,7 +63,7 @@ module Networking =
                 |> Async.AwaitTask
 
             let u = Uri(url).ToString()
-            let baseUrl = u.Substring(0, u.IndexOf("/", StringComparison.Ordinal))
+           // let baseUrl = u.Substring(0, u.IndexOf("/", StringComparison.Ordinal))
             let sub = u.Substring(0, u.LastIndexOf('/'))
 
             return
@@ -87,13 +81,11 @@ module Networking =
                         elif (l.StartsWith("http://")
                               || (l.StartsWith("https://"))) then
                             l
-                        else if not (l.StartsWith("http")) then
-                            sprintf @"%s/%s" sub l
                         else
-                            l
+                             $"{sub}/{l}"
 
                     match (Uri.TryCreate(url, UriKind.Absolute)) with
-                    | true, u -> url
+                    | true, _ -> url
                     | false, _ -> "")
                 |> Set.filter (fun x -> x.Length > 0)
 
@@ -126,7 +118,7 @@ module Networking =
 
                     if (contentType = "text/html") then
                         let! content = r.Content.ReadAsStringAsync() |> Async.AwaitTask
-                        let! links = getLinks url content
+                        let! links = getLinks baseUrl url content
                         return Link.Good(parentUrl, url, links)
                     else
                         return Link.Good(parentUrl, url, Set.empty)
@@ -142,9 +134,10 @@ module FileOps =
     let addLinks file (dictionary: ConcurrentDictionary<string, string>) =
         for line in File.ReadAllLines(file) do
             let pair = line.Split(",", StringSplitOptions.RemoveEmptyEntries)
-            let parent = pair.[0].Trim('"')
-            let child = pair.[1].Trim('"')
-            dictionary.[child] <- parent
+            if(pair.Length > 1) then
+                let parent = pair.[0].Trim('"')
+                let child = pair.[1].Trim('"')
+                dictionary.[child] <- parent
 
     let getQueueLinks file = File.ReadAllLines file
 
@@ -317,8 +310,9 @@ type WebCrawler(baseUrl, outputDir: string, ?logFun) =
     let goodFile = outputDir + "good.txt"
     let badFile = outputDir + "bad.txt"
     let queueFile = outputDir + "queue.txt"
-    let fileAgent = FileOps.fileAgent goodFile badFile queueFile ct
     let visited, queue = FileOps.getVisitedAndQueue goodFile badFile queueFile
+    
+    let fileAgent = FileOps.fileAgent goodFile badFile queueFile ct
     let crawlerAgent = Crawler.crawlerAgent baseUrl fileAgent visited queue ct log
     member _.Start(startUrl: string) = crawlerAgent.Post("", startUrl)
     member _.Stop() = cts.Cancel()
