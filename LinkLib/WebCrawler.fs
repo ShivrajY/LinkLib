@@ -40,18 +40,24 @@ module MultiThreading =
                     return! failwith "Semaphore timeout"
             }
 
-    let webRequestGate = RequestGate(20)
+    let webRequestGate = RequestGate(250)
 
 module Networking =
     open DomainTypes
+    ServicePointManager.MaxServicePoints <- 250
     let handler = new HttpClientHandler()
     handler.AllowAutoRedirect <- true
-    handler.AutomaticDecompression <- DecompressionMethods.All
-    handler.MaxConnectionsPerServer <- 256
+    //handler.AutomaticDecompression <- DecompressionMethods.All
+    //handler.MaxConnectionsPerServer <- 256
     handler.ServerCertificateCustomValidationCallback <- fun _ _ _ _ -> true
-    handler.UseCookies <- true
-    handler.CookieContainer <- new CookieContainer()
+    //handler.UseCookies <- true
+    //handler.CookieContainer <- new CookieContainer()
     let httpClient = new HttpClient(handler)
+
+    httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36"
+    )
+
     let config = Configuration.Default.WithDefaultLoader()
 
     let getLinks url html =
@@ -63,6 +69,7 @@ module Networking =
                 |> Async.AwaitTask
 
             let u = Uri(url).ToString()
+            let baseUrl = u.Substring(0, u.IndexOf("/", StringComparison.Ordinal))
             let sub = u.Substring(0, u.LastIndexOf('/'))
 
             return
@@ -73,27 +80,27 @@ module Networking =
                     x.Length > 1
                     && not (x.Contains("javascript"))
                     && not (x.StartsWith('#')))
-                |> Set.map (fun x ->
-                    x
-                        .Replace(@"\n", String.Empty)
-                        .Replace(@"\t", String.Empty)
-                        .Replace(Environment.NewLine, String.Empty))
                 |> Set.map (fun l ->
-                    let x = l.TrimEnd(' ', '/')
-
-                    let lnk =
-                        if (x.StartsWith("http")) then
-                            x
-                        else if (x.StartsWith('/')) then
-                            $"{sub}{x}/"
+                    let url =
+                        if (l.StartsWith('/')) then
+                            baseUrl + l
+                        elif (l.StartsWith("http://")
+                              || (l.StartsWith("https://"))) then
+                            l
+                        else if not (l.StartsWith("http")) then
+                            sprintf @"%s/%s" sub l
                         else
-                            sprintf @"%s/%s/" sub x
+                            l
 
-                    lnk)
+                    match (Uri.TryCreate(url, UriKind.Absolute)) with
+                    | true, u -> url
+                    | false, _ -> "")
+                |> Set.filter (fun x -> x.Length > 0)
+
 
         }
     // download html
-    let fetch (baseUrl: string) (parentUrl: string) (url: string) (ct: CancellationToken) =
+    let rec fetch (baseUrl: string) (parentUrl: string) (url: string) (ct: CancellationToken) =
         async {
             try
                 use! holder = MultiThreading.webRequestGate.AcquireAsync()
@@ -103,13 +110,26 @@ module Networking =
                     |> Async.AwaitTask
 
                 if not (r.IsSuccessStatusCode) then
-                    return Link.Bad(parentUrl, url)
+                    let x = r.RequestMessage.RequestUri.ToString()
+                    //return fetch baseUrl parentUrl x ct
+                    if (x <> url) && (not (String.IsNullOrWhiteSpace(x))) then
+                        return! fetch baseUrl parentUrl x ct
+                    else if (r.StatusCode = HttpStatusCode.NotFound) then
+                        return Link.Bad(parentUrl, url)
+                    else
+                        return Link.Good(parentUrl, url, Set.empty)
+
                 elif not (url.Contains baseUrl) then
                     return Link.Good(parentUrl, url, Set.empty)
                 else
-                    let! content = r.Content.ReadAsStringAsync() |> Async.AwaitTask
-                    let! links = getLinks url content
-                    return Link.Good(parentUrl, url, links)
+                    let contentType = r.Content.Headers.ContentType.MediaType
+
+                    if (contentType = "text/html") then
+                        let! content = r.Content.ReadAsStringAsync() |> Async.AwaitTask
+                        let! links = getLinks url content
+                        return Link.Good(parentUrl, url, links)
+                    else
+                        return Link.Good(parentUrl, url, Set.empty)
             with
             | ex -> return Link.Error(ex.Message)
         }
@@ -287,10 +307,12 @@ type WebCrawler(baseUrl, outputDir: string, ?logFun) =
     let log = defaultArg logFun (fun (msg: string) -> Console.WriteLine(msg))
 
     let outputDir =
-        if not (outputDir.EndsWith("\\")) then
+        Directory.CreateDirectory outputDir |> ignore
+
+        if (outputDir.EndsWith("/")) then
             outputDir
         else
-            outputDir + "\\"
+            outputDir + "/"
 
     let goodFile = outputDir + "good.txt"
     let badFile = outputDir + "bad.txt"
