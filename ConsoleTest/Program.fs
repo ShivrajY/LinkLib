@@ -8,6 +8,7 @@ let goodFile = "GoodLinks.txt"
 let badFile = "BadLinks.txt"
 let logFuns<'a> = printfn "%A"
 let crawer = new WebCrawler(baseUrl, outputDir, logFuns)
+printfn "Crawler Starting..."
 crawer.Start(url)
-
+printfn "Crawler Started..."
 Console.ReadKey() |> ignore

@@ -232,6 +232,8 @@ module Crawler =
     open FileOps
     open System.Collections.Concurrent
 
+    let isCompleted = "CompletedOn.txt"
+    
     let crawlerAgent
         (baseUrl: string)
         (fileAgent: MailboxProcessor<FileMessage>)
@@ -282,6 +284,7 @@ module Crawler =
 
                                         if not (queue.Any()) then
                                             fileAgent.Post(FileMessage.Quit)
+                                            File.WriteAllText(isCompleted,DateTime.Today.ToShortDateString())
                                             log "Job Done!"
                                             return ()
                                     }
@@ -318,5 +321,19 @@ type WebCrawler(baseUrl, outputDir: string, ?logFun) =
     
     let fileAgent = FileOps.fileAgent goodFile badFile queueFile ct
     let crawlerAgent = Crawler.crawlerAgent baseUrl fileAgent visited queue ct log
-    member _.Start(startUrl: string) = crawlerAgent.Post("", startUrl)
+    member _.Start(startUrl: string) = 
+        let completed =
+            if(File.Exists Crawler.isCompleted) then
+                log $"Scrapping and checking on Completed On: {File.ReadAllText(Crawler.isCompleted)}"
+                true
+            else
+                false
+        if not (completed) then
+            if(queue.IsEmpty) then
+             crawlerAgent.Post("", startUrl)
+            else
+                for kvp in queue do
+                    queue.TryRemove(kvp)|>ignore
+                    crawlerAgent.Post(kvp.Value, kvp.Key)
+
     member _.Stop() = cts.Cancel()
